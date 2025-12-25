@@ -1,4 +1,4 @@
-FROM node:18-bullseye-slim
+FROM node:20-bullseye-slim
 
 # Install dependencies required for bot (Python for yt-dlp, FFmpeg for music)
 RUN apt-get update && \
