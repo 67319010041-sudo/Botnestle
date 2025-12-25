@@ -4,6 +4,7 @@ FROM node:20-bullseye-slim
 RUN apt-get update && \
     apt-get install -y python3 ffmpeg build-essential && \
     rm -rf /var/lib/apt/lists/*
+    
 
 # Set working directory
 WORKDIR /app
