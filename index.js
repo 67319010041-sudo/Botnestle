@@ -1,23 +1,20 @@
-
 'use strict';
 
 process.env.PYTHONWARNINGS = 'ignore';
 process.env.PYTHONUNBUFFERED = '1';
 
-require('dotenv').config();
+require('dotenv').config({ path: './config/.env' });
 const path = require('path');
-const { Client, GatewayIntentBits, Routes, REST, SlashCommandBuilder, ActivityType } = require('discord.js');
+const { Client, GatewayIntentBits, Routes, REST, SlashCommandBuilder, MessageFlags, ActivityType, Events } = require('discord.js');
 const { DisTube } = require('distube');
 const { SpotifyPlugin } = require('@distube/spotify');
-const { SoundCloudPlugin } = require('@distube/soundcloud');
 const { YtDlpPlugin } = require('@distube/yt-dlp');
 const { getVoiceConnection } = require('@discordjs/voice');
 const fs = require('fs');
 const { initializeApp } = require("firebase/app");
-const { getDatabase, ref, get, child, set, runTransaction } = require("firebase/database");
-const play = require('play-dl'); // Use play-dl for better search
+const { getDatabase, ref, get, child, set } = require("firebase/database");
+const play = require('play-dl');
 
-// --- Firebase Configuration ---
 const firebaseConfig = {
   apiKey: "AIzaSyBY5b_eChwHx3qO-J4YkW9aw03xOOEMurM",
   authDomain: "discordunknow-54ce9.firebaseapp.com",
@@ -29,48 +26,43 @@ const firebaseConfig = {
   databaseURL: "https://discordunknow-54ce9-default-rtdb.asia-southeast1.firebasedatabase.app/"
 };
 
-// Initialize Firebase
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getDatabase(firebaseApp);
 
 let youtubeCookie = undefined;
 try {
-  const jsonPath = path.join(__dirname, 'cookies.json');
-  const txtPath = path.join(__dirname, 'cookies.txt');
+  const jsonPath = path.join(__dirname, 'config', 'cookies.json');
+  const txtPath = path.join(__dirname, 'config', 'cookies.txt');
 
   if (fs.existsSync(txtPath)) {
-    youtubeCookie = txtPath; // Pass file path directly
-    console.log('✅ Found cookies.txt (Netscape format). Using for auth.');
+    youtubeCookie = txtPath;
+    console.log('Cookies loaded from config/cookies.txt');
   } else if (fs.existsSync(jsonPath)) {
-    youtubeCookie = jsonPath; // Pass file path directly
-    console.log('✅ Found cookies.json. Using for auth.');
+    youtubeCookie = jsonPath;
+    console.log('Cookies loaded from config/cookies.json');
   } else {
-    console.log('ℹ️ No cookies found. YouTube might rate-limit.');
+    console.log('No cookies found.');
   }
 } catch (e) {
-  console.warn('❌ Error checking cookies:', e);
+  console.warn('Error checking cookies:', e);
 }
 
-// --------------------------------------------------------------------------------
-// 1. FFmpeg & Voice Setup
-// --------------------------------------------------------------------------------
 try {
-  const ff = require('ffmpeg-static');
-  if (ff) {
-    process.env.FFMPEG_PATH = ff;
-    // Helper to ensure ffmpeg is found
-    process.env.PATH = `${process.env.PATH}${path.delimiter}${path.dirname(ff)}`;
-    console.log('Found ffmpeg-static at:', ff);
+  if (fs.existsSync('/usr/bin/ffmpeg')) {
+    process.env.FFMPEG_PATH = '/usr/bin/ffmpeg';
+    console.log('Using System FFmpeg');
   } else {
-    console.warn('ffmpeg-static found but returned null/undefined path?');
+    const ff = require('ffmpeg-static');
+    if (ff) {
+      process.env.FFMPEG_PATH = ff;
+      process.env.PATH = `${process.env.PATH}${path.delimiter}${path.dirname(ff)}`;
+      console.log('Using ffmpeg-static');
+    }
   }
 } catch (e) {
-  console.warn('ffmpeg-static not installed or error loading it. System ffmpeg will be used if available.');
+  console.warn('FFmpeg setup warning:', e);
 }
 
-// --------------------------------------------------------------------------------
-// 2. Client & DisTube Setup
-// --------------------------------------------------------------------------------
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -82,7 +74,6 @@ const client = new Client({
 
 const plugins = [
   new SpotifyPlugin(),
-  // new SoundCloudPlugin(), // Disabled to prevent Rate Limit errors
   new YtDlpPlugin({
     update: false,
     cookie: youtubeCookie
@@ -94,7 +85,6 @@ const distube = new DisTube(client, {
   emitAddSongWhenCreatingQueue: false,
   emitAddListWhenCreatingQueue: false,
   plugins,
-  // Stable FFmpeg arguments for network resilience
   ffmpeg: {
     args: {
       global: {
@@ -102,69 +92,71 @@ const distube = new DisTube(client, {
         'reconnect_streamed': '1',
         'reconnect_delay_max': '5',
       },
+      input: {
+        'reconnect': '1',
+      }
     },
   },
+  ytdlOptions: {
+    quality: 'highestaudio',
+    highWaterMark: 1 << 25
+  }
 });
 
-// Event listeners for DisTube to debug sound
 distube
   .on('playSong', (queue, song) => {
-    const msg = `เพลงที่เล่นคือ ${song.name}`;
+    const msg = `Playing: ${song.name}`;
     queue.textChannel?.send(msg).catch(() => { });
   })
   .on('finish', (queue) => {
     setTimeout(() => {
       try {
         distube.voices.leave(queue.id);
-      } catch (e) { console.error('Auto-leave error:', e); }
+      } catch (e) { }
     }, 2000);
   })
   .on('addSong', (queue, song) => {
-    const msg = `เพิ่มเพลง **${song.name}** - \`${song.formattedDuration}\` เข้าคิวโดย ${song.user}`;
+    const msg = `Added: ${song.name}`;
     queue.textChannel?.send(msg).catch(() => { });
   })
   .on('error', (error, queue) => {
     if (queue && queue.textChannel) {
-      queue.textChannel.send(`เกิดข้อผิดพลาด: ${error.toString().slice(0, 1900)}`).catch(() => { });
+      queue.textChannel.send(`Error: ${error.toString().slice(0, 1900)}`).catch(() => { });
     }
     console.error('DisTube Error:', error);
   });
 
-
-// --------------------------------------------------------------------------------
-// 3. Command Registration (Nes / Stop)
-// --------------------------------------------------------------------------------
 const commands = [
   new SlashCommandBuilder()
     .setName('nestle')
-    .setDescription('เล่นเพลง (รองรับ YouTube และอื่นๆ)')
+    .setDescription('Play a song')
     .addStringOption(option =>
       option.setName('query')
-        .setDescription('ชื่อเพลง หรือ ลิงก์')
+        .setDescription('Song name or link')
         .setRequired(true)
     ),
   new SlashCommandBuilder()
     .setName('leave')
-    .setDescription('ออกจากห้องเสียง (หยุดเพลง)'),
+    .setDescription('Leave the voice channel'),
   new SlashCommandBuilder()
     .setName('skip')
-    .setDescription('ข้ามเพลงปัจจุบัน'),
+    .setDescription('Skip current song'),
   new SlashCommandBuilder()
     .setName('site')
-    .setDescription('รับลิงก์หน้าจัดการ Playlist'),
+    .setDescription('Get playlist management link'),
   new SlashCommandBuilder()
-    .setName('playlish') // Typo intended as per user request
-    .setDescription('เล่นเพลงทั้งหมดจาก Playlist เว็บ'),
+    .setName('playlish')
+    .setDescription('Play songs from your web playlist'),
   new SlashCommandBuilder()
     .setName('deletechat')
-    .setDescription('ลบข้อความทั้งหมดที่บอทพิมพ์ (Clean Up)'),
+    .setDescription('Delete bot messages'),
 ].map(c => c.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(process.env.TOKEN || process.env.DISCORD_TOKEN);
 
 async function registerCommands(clientId) {
   try {
-    console.log('Started refreshing application (/) commands.');
+    console.log('Refreshing application (/) commands.');
     await rest.put(Routes.applicationCommands(clientId), { body: commands });
     console.log('Successfully reloaded application (/) commands.');
   } catch (error) {
@@ -172,24 +164,16 @@ async function registerCommands(clientId) {
   }
 }
 
-// --------------------------------------------------------------------------------
-// 4. Bot Events
-// --------------------------------------------------------------------------------
-const { Events, MessageFlags } = require('discord.js');
-
 client.once(Events.ClientReady, async () => {
   console.log(`Logged in as ${client.user.tag}!`);
-
-  // Register commands globally (updates can take up to 1h, for instant use guild-specific but global is easier for one bot)
   await registerCommands(client.user.id);
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  // Ensure we are in a guild and member is cached
   if (!interaction.inCachedGuild()) {
-    return interaction.reply({ content: 'คำสั่งนี้ใช้ได้เฉพาะในเซิร์ฟเวอร์เท่านั้นครับ', flags: MessageFlags.Ephemeral });
+    return interaction.reply({ content: 'Command cannot be used in DMs.', flags: MessageFlags.Ephemeral });
   }
 
   const { commandName } = interaction;
@@ -199,46 +183,56 @@ client.on(Events.InteractionCreate, async (interaction) => {
     try {
       await interaction.deferReply();
     } catch (err) {
-      // 10062: Unknown interaction (expired), 10015: Unknown Webhook (ephemeral issues)
       if ([10062, 10015].includes(err.code)) return;
-      console.error('Defer Error:', err);
       return;
     }
 
     if (!voiceChannel) {
-      return interaction.editReply('คุณต้องเข้าห้องเสียงก่อนใช้คำสั่งนี้นะครับ!');
+      return interaction.editReply('You must be in a voice channel.');
     }
 
     let query = interaction.options.getString('query');
+    let statusMsg = 'Searching...';
+    await interaction.editReply(statusMsg);
 
-    // Use play-dl to search if it's not a link (Fixes NO_RESULT error)
     if (!query.startsWith('http')) {
       try {
-        console.log(`🔎 Searching with play-dl: ${query}`);
+        if (youtubeCookie) {
+          try {
+            if (fs.existsSync(youtubeCookie) && youtubeCookie.endsWith('.json')) {
+              const cookieData = JSON.parse(fs.readFileSync(youtubeCookie, 'utf-8'));
+              await play.setToken({ youtube: { cookie: cookieData } });
+            }
+          } catch (e) { }
+        }
+
         const searchResults = await play.search(query, { limit: 1 });
         if (searchResults && searchResults.length > 0) {
           query = searchResults[0].url;
-          console.log(`✅ Found: ${query}`);
+          statusMsg = `Found: ${searchResults[0].title}`;
+          await interaction.editReply(statusMsg);
+        } else {
+          throw new Error("No results found.");
         }
       } catch (searchErr) {
-        console.error('play-dl search failed:', searchErr);
+        return interaction.editReply(`Search failed: ${searchErr.message}`);
       }
     }
 
     try {
+      await interaction.editReply(`${statusMsg}\nConnecting...`);
+
       await distube.play(voiceChannel, query, {
         member: interaction.member,
         textChannel: interaction.channel
       });
-      await interaction.editReply(`กำลังเล่น: **${query}**`);
+
+      await interaction.editReply(`${statusMsg}\nPlaying.`);
     } catch (error) {
-      console.error('Play error:', error);
-
       if (error.errorCode === 'VOICE_MISSING_PERMS') {
-        return interaction.editReply('ผมไม่มีสิทธิ์เข้าห้องเสียงนี้ครับ! รบกวนเปิดสิทธิ์ **Connect** ให้ผมหน่อยนะ 🥺');
+        return interaction.editReply('Permission denied. Cannot join voice channel.');
       }
-
-      await interaction.editReply('เกิดข้อผิดพลาดในการเปิดเพลง ลองใช้ลิงก์ YouTube ตรงๆ ดูนะครับ');
+      return interaction.editReply(`Error: ${error.toString().slice(0, 100)}`);
     }
   }
   else if (commandName === 'leave') {
@@ -251,33 +245,28 @@ client.on(Events.InteractionCreate, async (interaction) => {
         if (connection) connection.destroy();
       }, 1000);
 
-      // Silent leave: Delete the reply so no message is shown
       await interaction.deleteReply().catch(() => { });
-    } catch (e) {
-      // console.error('Command Error (Leave):', e); 
-    }
+    } catch (e) { }
   }
   else if (commandName === 'skip') {
     try {
       try { await interaction.deferReply(); } catch (e) { return; }
       const queue = distube.getQueue(interaction.guildId);
       if (!queue) {
-        return interaction.editReply('ไม่มีเพลงให้ข้ามครับ!').catch(() => { });
+        return interaction.editReply('Queue is empty.').catch(() => { });
       }
       try {
         await distube.skip(interaction.guildId);
-        await interaction.editReply('Skip');
+        await interaction.editReply('Skipped.');
       } catch (e) {
-        await interaction.editReply('ไม่เหลือเพลงให้ข้ามแล้วครับ');
+        await interaction.editReply('No more songs to skip.');
       }
-    } catch (e) {
-      console.error('Command Error (Skip):', e);
-    }
+    } catch (e) { }
   }
   else if (commandName === 'site') {
     const userId = interaction.user.id;
     await interaction.reply({
-      content: `**หน้าจัดลำดับเพลง (ของ ${interaction.user.username})**\n[คลิกที่นี่เพื่อจัดการ Playlist](https://discordunknow-g4zs.vercel.app/?uid=${userId})`,
+      content: `**Playlist Management**\n[Click Here](https://discordunknow-g4zs.vercel.app/?uid=${userId})`,
       flags: MessageFlags.Ephemeral
     });
   }
@@ -285,29 +274,27 @@ client.on(Events.InteractionCreate, async (interaction) => {
     await interaction.deferReply();
 
     if (!voiceChannel) {
-      return interaction.editReply('คุณต้องเข้าห้องเสียงก่อนใช้คำสั่งนี้นะครับ!');
+      return interaction.editReply('You must be in a voice channel.');
     }
 
     try {
       const userId = interaction.user.id;
       const dbRef = ref(db);
-      // Read from updated path: playlists/{userId}
       const snapshot = await get(child(dbRef, `playlists/${userId}`));
 
       if (!snapshot.exists()) {
-        return interaction.editReply('Playlist ของคุณว่างเปล่าครับ! ไปเพิ่มเพลงที่ `/site` ในเว็บก่อนนะ');
+        return interaction.editReply('Playlist is empty.');
       }
 
       const data = snapshot.val();
-      // Helper to sort if data is array-like or object
       const playlist = Array.isArray(data) ? data : Object.values(data);
       const validSongs = playlist.filter(url => url && typeof url === 'string');
 
       if (validSongs.length === 0) {
-        return interaction.editReply('Playlist ของคุณว่างเปล่าครับ!');
+        return interaction.editReply('Playlist is empty.');
       }
 
-      await interaction.editReply(`กำลังโหลด **${validSongs.length}** เพลงจาก Playlist ของคุณ...`);
+      await interaction.editReply(`Loading ${validSongs.length} songs...`);
 
       for (const url of validSongs) {
         try {
@@ -316,77 +303,61 @@ client.on(Events.InteractionCreate, async (interaction) => {
             textChannel: interaction.channel,
             skip: false
           });
-        } catch (err) {
-          console.error('Failed to load song:', url, err);
-        }
+        } catch (err) { }
       }
 
-      await interaction.followUp('เพิ่มเพลงเข้าคิวเรียบร้อยครับ!');
+      await interaction.followUp('Playlist added to queue.');
 
     } catch (e) {
-      console.error('Playlish Error:', e);
-      await interaction.editReply('เกิดข้อผิดพลาดในการโหลด Playlist');
+      await interaction.editReply('Failed to load playlist.');
     }
   }
   else if (commandName === 'deletechat') {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     try {
-      // Fetch last 100 messages
       const messages = await interaction.channel.messages.fetch({ limit: 100 });
-      // Filter only bot's messages
       const botMessages = messages.filter(msg => msg.author.id === client.user.id);
 
       if (botMessages.size > 0) {
         try {
-          // Try Bulk Delete first (Faster, but needs 'Manage Messages' permission)
           await interaction.channel.bulkDelete(botMessages, true);
-          await interaction.editReply(`✅ ลบข้อความของฉันแบบ Turbo ไปแล้ว **${botMessages.size}** ข้อความครับ!`);
+          await interaction.editReply(`Deleted **${botMessages.size}** messages.`);
         } catch (err) {
           if (err.code === 50013) {
-            // Fallback: Delete one by one (Slower, but works without extra permission)
-            await interaction.editReply('⚠️ ไม่มีสิทธิ์ "จัดการข้อความ" (Bulk Delete)... กำลังลบทีละข้อความครับ (อาจช้าหน่อย)...');
+            await interaction.editReply('Deleting messages manually...');
             let count = 0;
             for (const msg of botMessages.values()) {
-              try { await msg.delete(); count++; } catch (e) { /* Ignore deleted */ }
+              try { await msg.delete(); count++; } catch (e) { }
             }
-            await interaction.editReply(`✅ ลบข้อความของฉัน (Manual Mode) ไปแล้ว **${count}** ข้อความครับ!`);
+            await interaction.editReply(`Manually deleted **${count}** messages.`);
           } else {
             throw err;
           }
         }
       } else {
-        await interaction.editReply('❓ ไม่พบข้อความของฉันใน 100 ข้อความล่าสุดครับ');
+        await interaction.editReply('No messages to delete.');
       }
     } catch (e) {
-      console.error('Delete Chat Error:', e);
-      await interaction.editReply('❌ เกิดข้อผิดพลาดในการลบ (อาจไม่มีสิทธิ์ Manage Messages หรือข้อความเก่าเกิน 14 วัน)');
+      await interaction.editReply('Error deleting messages.');
     }
   }
 });
 
-// --------------------------------------------------------------------------------
-// 5. Start
-// --------------------------------------------------------------------------------
 const token = process.env.TOKEN || process.env.DISCORD_TOKEN;
 if (!token) {
-  console.error('❌ Error: Token not found in .env files!');
-  console.error('   Please check if .env exists and has TOKEN=... inside.');
+  console.error('Error: Token not found.');
 } else {
-  console.log(`🔑 Token found! (Length: ${token.length}) - Attempting login...`);
-  if (token.includes(' ')) console.warn('⚠️ Warning: Token seems to have spaces. Please remove them in .env!');
+  console.log(`Token found (Length: ${token.length})`);
 }
 
 client.on('ready', () => {
-  console.log(`✅ ${client.user.tag} is online!`);
+  console.log(`${client.user.tag} is online!`);
 
-  // Set Custom Status (Like Pekky)
-  client.user.setActivity('/nestle | v1.1.4 Lastversion', { type: ActivityType.Listening });
-  console.log(`📊 Stats: ${client.guilds.cache.size} Servers, ${client.users.cache.size} Users`);
+  client.user.setActivity('/nestle | v1.1.5', { type: ActivityType.Listening });
+  console.log(`Stats: ${client.guilds.cache.size} Servers, ${client.users.cache.size} Users`);
 
-  // Update Firebase Stats every 5 seconds
   setInterval(() => {
     try {
-      // 1. General Bot Stats
       const statsRef = ref(db, 'stats/bot_status');
       set(statsRef, {
         ping: client.ws.ping,
@@ -396,69 +367,46 @@ client.on('ready', () => {
         last_updated: Date.now()
       });
 
-      // 2. Active Session Tracking (Ping Monitor)
       const sessions = [];
-      console.log(`[DEBUG] Syncing... Active Voice Connections: ${distube.voices.collection.size}`); // Debug Log
       distube.voices.collection.forEach((voice) => {
-        // voice.connection.ping.udp is the voice latency (often more relevant for music)
-        // If not available, fall back to ws ping or a random jitter for realism if undefined
         const voicePing = voice.connection?.ping?.udp ?? voice.connection?.ping?.ws ?? client.ws.ping;
 
         sessions.push({
           guildId: voice.id,
           name: voice.channel?.guild?.name || `Room #${voice.id.slice(-4)}`,
           ping: Math.round(voicePing),
-          channelName: voice.channel?.name || 'Unknown Channel'
+          channelName: voice.channel?.name || 'Unknown'
         });
       });
-      console.log('[DEBUG] Sessions payload:', JSON.stringify(sessions)); // Debug Payload
 
       const sessionsRef = ref(db, 'stats/active_sessions');
       set(sessionsRef, sessions);
 
-    } catch (err) {
-      console.error('Firebase Stats Error:', err);
-    }
+    } catch (err) { }
   }, 5000);
 });
 
-// --------------------------------------------------------------------------------
-// 6. Global Error Handling (Prevent Crashes)
-// --------------------------------------------------------------------------------
 client.on('error', (error) => {
-  console.error('⚠️ Discord Client Error:', error);
+  console.error('Client Error:', error);
 });
 
 process.on('unhandledRejection', (error) => {
-  console.error('⚠️ Unhandled Rejection:', error);
+  console.error('Unhandled Rejection:', error);
 });
 
 process.on('uncaughtException', (error) => {
-  console.error('⚠️ Uncaught Exception:', error);
+  console.error('Uncaught Exception:', error);
 });
-
 
 client.login(token).catch(e => {
-  if (e.code === 'TokenInvalid') {
-    console.error('\n❌ LOGIN FAILED: The token provided is invalid or has expired.');
-    console.error('   Please follow these steps:');
-    console.error('   1. Go to https://discord.com/developers/applications');
-    console.error('   2. Select your Application > "Bot" tab');
-    console.error('   3. Click "Reset Token" and copy the new token');
-    console.error('   4. Update the TOKEN value in your .env file\n');
-  } else {
-    console.error('Failed to login:', e);
-  }
+  console.error('Login Failed:', e);
 });
 
-// --------------------------------------------------------------------------------
-// 7. HTTP Server for 24/7 Hosting (Render / Railway / UptimeRobot)
-// --------------------------------------------------------------------------------
 const http = require('http');
-const port = process.env.PORT || 8080; // Changed to 8080 to avoid conflict with 'npx serve' (3000)
+const port = process.env.PORT || 8080;
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('NestleBot is waiting for commands!');
+  res.end('System Ready.');
 }).listen(port, () => {
-  console.log(`🌐 HTTP Server is listening on port ${port} (Ready for UptimeRobot)`);
+  console.log(`HTTP Listener on ${port}`);
 });
